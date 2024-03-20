@@ -4,9 +4,9 @@ This repository is dedicated to the CSCI 49365, Parallel Programming course at H
 
 ## Assignments
 
-1. **Assignment 1: Introduction to MPI**
-   - Description: Implement basic MPI communication routines.
-2. **Assignment 2: Parallel Matrix Multiplication**
-   - Description: Implement parallel matrix multiplication using MPI.
+1. **Assignment 1: estimate_ln.c**
+   - Description: Estimates the natural log of a number based on the number of segments
+   - Build: mpicc -Wall -g -o estimate_ln estimate_ln.c -lm
+   - Run: mpirun -H [hosts] estimate_ln [input_value] [num_segments]
 
 
