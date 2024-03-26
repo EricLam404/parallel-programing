@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include "mpi.h"
 
-#define ROOT 0
+// #define ROOT 0
 #define base 256
 #define prime 101
 
@@ -41,20 +41,22 @@ int main(int argc, char *argv[]) {
     int file_size;
     char text[file_size];
     FILE *file;
-    int pattern_length;
     int pattern_value;
     int hash_value;
+    MPI_Status status ; /* result of MPI_Recv */
+    char *elements;                 /* elements to send*/
+    int pattern_length = strlen(pattern);
+    int n = (file_size-(pattern_length-1)) / p;
 
     MPI_Init( &argc, &argv );
     MPI_Comm_rank( MPI_COMM_WORLD, &id );
     MPI_Comm_size (MPI_COMM_WORLD, &p);
 
-    MPI_Bcast(&pattern_length, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
+    const int ROOT = p - 1;
+
     MPI_Bcast(&pattern_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
     MPI_Bcast(&hash_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
-    MPI_Bcast(&pattern_length, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&file_size, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
-    MPI_Bcast(pattern, pattern_length, MPI_CHAR, ROOT, MPI_COMM_WORLD);
     MPI_Barrier (MPI_COMM_WORLD);
     
     /* Check usage */
@@ -66,36 +68,48 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    /* Call stat () to fill statbuf struct */ 
-    if (lstat(argv[2], &statbuf ) == -1 ) {
-        if(ROOT == id){
-            printf("Could not stat file %s \n" , argv[2]);
+    if (ROOT == id) {
+        /* Call stat () to fill statbuf struct */ 
+        if (lstat(argv[2], &statbuf ) == -1 ) {
+            if(ROOT == id){
+                printf("Could not stat file %s \n" , argv[2]);
+            }
+            MPI_Finalize(); 
+            exit(1);
         }
-        MPI_Finalize(); 
-        exit(1);
-    }
 
-    pattern = argv[1];
-    file_name = argv[2];
-    file_size = statbuf.st_size;
+        pattern = argv[1];
+        file_name = argv[2];
+        file_size = statbuf.st_size;
 
-    file = fopen(file_name, "r");
-    if (file == NULL) {
-        if(ROOT == id){
-            printf("Error opening file");
+        file = fopen(file_name, "r");
+        if (file == NULL) {
+            if(ROOT == id){
+                printf("Error opening file");
+            }
+            MPI_Finalize(); 
+            exit(1);
         }
-        MPI_Finalize(); 
-        exit(1);
-    }
 
-    if (ROOT == 0) {
-        for(int i = 0; i < file_size; i++){
-            text[i] = fgetc(file);
-        }
-        pattern_length = strlen(pattern);
+        /**
+         * send the indexes from [i*n, ((i+1)*n-1) + (p-1)]
+        */
+    
         pattern_value;
         hash_value = 1;
-        int i;
+        
+        int chars;                      /* number of characters that each row gets*/
+        int i;                          /* loop index*/
+        for(i = 0; i < p - 1; i++){
+            chars = (i+1)*n + pattern_length - 2 - i*n;
+            fread(elements, sizeof(char), chars, file);
+            
+            MPI_Send(elements, chars, MPI_CHAR, i, 1, MPI_COMM_WORLD);
+        }
+
+        /* gets its own elements*/
+        chars = file_size - i*n;
+        fread(elements, sizeof(char), chars, file);
 
         // pow(base, pattern_length-1)%p so it doesn't overflow
         for(i = 0; i < pattern_length - 1; i++){
@@ -106,14 +120,37 @@ int main(int argc, char *argv[]) {
         for(i = 0; i < pattern_length; i++){
             pattern_value = (pattern_value * base + pattern[i]) % prime;
         }
+
+        fclose(file);
+    } else {
+        MPI_Recv(elements, chars_for_p(id, n), MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
     }
-    
     // printf("%s \n%s \n", pattern, file_name);
     // /* Print size of file . intmax_t is a type that holds big numbers */
     // printf ("%8jd \n", (intmax_t)statbuf.st_size);
-    search(pattern, text, pattern_length, pattern_value, hash_value);
+    int count = strlen(elements) - (pattern_length+1);
+    char found[count];
+    search(pattern, elements, pattern_length, pattern_value, hash_value);
 
-    fclose(file);
+    int prompt ; /* synchronizing variable */
+    const int PROMPT_MSG = 2;
+    const int RESPONSE_MSG = 3;
+    if(0 == id){
+        print_found();
+        if(p > 1){
+            int i;
+            for(i = 1; i < p; i++){
+                MPI_Send(&prompt, 1, MPI_INT, i, PROMPT_MSG, MPI_COMM_WORLD);
+
+                MPI_Recv(found, count, MPI_CHAR, i, RESPONSE_MSG, MPI_COMM_WORLD, &status);
+                print_found();
+            }
+        }
+    } else {
+        MPI_Recv(&prompt, 1, MPI_INT, 0, PROMPT_MSG, MPI_COMM_WORLD, &status);
+        MPI_Send(found, count, MPI_CHAR, 0, RESPONSE_MSG, MPI_COMM_WORLD);
+    }
+
     MPI_Finalize(); 
     return 0;
 }
