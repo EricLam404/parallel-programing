@@ -1,4 +1,4 @@
-******************************************************************************
+/******************************************************************************
 Title : estimate_ln.c
 Author : Eric Lam
 Created on : March 2, 2024
@@ -18,7 +18,7 @@ Added Usage Error handling
 #include <stdbool.h>
 #include <math.h>
 #include <stdlib.h>
-#include <mpi/mpi.h>
+#include "mpi.h"
 
 #define ROOT 0
 
