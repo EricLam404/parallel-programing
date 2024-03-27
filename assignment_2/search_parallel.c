@@ -12,7 +12,8 @@
 
 // #define ROOT 0
 #define base 256
-#define prime 101
+#define prime 101 
+#define BUFFERMAX 2000
 
 /** search()
  *  This returns the index of every match that the pattern is found
@@ -30,86 +31,53 @@
  *  however, we need to pass [R*n, ((R+1)*n-1) + (p-1)] to be able to
  *  check the indexes from [((R+1)*n-1)-p, (R+1)*n-1)]
 */
-void search(char* pattern, char* text, int pattern_length, int pattern_value, int hash_value);
+int* search(char* pattern, char* text, int pattern_length, int pattern_value, int hash_value, int *size);
+void print(int *arr, int size, int id, int n);
 
 int main(int argc, char *argv[]) {
-    struct stat statbuf;
+    struct stat statbuf;    /* */
     int id;                 /* rank of executing process    */
     int p;                  /* number of processes          */
-    char* pattern;
-    char* file_name;
-    int file_size;
-    char text[file_size];
-    FILE *file;
-    int pattern_value;
+
+    int pattern_value;      
     int hash_value;
-    MPI_Status status ; /* result of MPI_Recv */
-    char *elements;                 /* elements to send*/
-    int pattern_length = strlen(pattern);
-    int n = (file_size-(pattern_length-1)) / p;
+    int file_size;
+    int n;
+
+    FILE *file;
+    int pattern_length;
+    MPI_Status status;         /* result of MPI_Recv */
 
     MPI_Init( &argc, &argv );
     MPI_Comm_rank( MPI_COMM_WORLD, &id );
     MPI_Comm_size (MPI_COMM_WORLD, &p);
 
     const int ROOT = p - 1;
-
-    MPI_Bcast(&pattern_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
-    MPI_Bcast(&hash_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
-    MPI_Bcast(&file_size, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
-    MPI_Barrier (MPI_COMM_WORLD);
-    
-    /* Check usage */
-    if (argc != 3) {
-        if(ROOT == id){
+    int i;                          /* loop index*/
+    if(ROOT == id){
+        if((argc < 3)){
             printf("Usage: %s <pattern> <file>\n", argv[0]);
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        MPI_Finalize(); 
-        exit(1);
-    }
-
-    if (ROOT == id) {
         /* Call stat () to fill statbuf struct */ 
         if (lstat(argv[2], &statbuf ) == -1 ) {
-            if(ROOT == id){
-                printf("Could not stat file %s \n" , argv[2]);
-            }
-            MPI_Finalize(); 
-            exit(1);
-        }
+            printf("Could not stat file %s \n" , argv[2]);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        } 
 
-        pattern = argv[1];
-        file_name = argv[2];
-        file_size = statbuf.st_size;
+        pattern_length = strlen(argv[1]);
+        file_size = statbuf.st_size-1;
+        /* Rounding n to the nearest int*/
+        n = (((double)file_size-(pattern_length-1)) / p) + 0.5; 
+    }
 
-        file = fopen(file_name, "r");
-        if (file == NULL) {
-            if(ROOT == id){
-                printf("Error opening file");
-            }
-            MPI_Finalize(); 
-            exit(1);
-        }
+    MPI_Bcast(&pattern_length, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
+    char pattern[pattern_length];          /* */
 
-        /**
-         * send the indexes from [i*n, ((i+1)*n-1) + (p-1)]
-        */
-    
-        pattern_value;
+    if(ROOT == id){
+        strcpy(pattern, argv[1]);
         hash_value = 1;
-        
-        int chars;                      /* number of characters that each row gets*/
-        int i;                          /* loop index*/
-        for(i = 0; i < p - 1; i++){
-            chars = (i+1)*n + pattern_length - 2 - i*n;
-            fread(elements, sizeof(char), chars, file);
-            
-            MPI_Send(elements, chars, MPI_CHAR, i, 1, MPI_COMM_WORLD);
-        }
-
-        /* gets its own elements*/
-        chars = file_size - i*n;
-        fread(elements, sizeof(char), chars, file);
+        pattern_value = 0;
 
         // pow(base, pattern_length-1)%p so it doesn't overflow
         for(i = 0; i < pattern_length - 1; i++){
@@ -120,45 +88,127 @@ int main(int argc, char *argv[]) {
         for(i = 0; i < pattern_length; i++){
             pattern_value = (pattern_value * base + pattern[i]) % prime;
         }
+    }
+    
+    MPI_Bcast(pattern, strlen(pattern) + 1, MPI_CHAR, ROOT, MPI_COMM_WORLD); 
+
+    MPI_Bcast(&hash_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
+    MPI_Bcast(&pattern_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&n, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&file_size, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+
+    #ifdef DEBUG_ON
+    /* To debug, compile this program with the -DDEBUG_ON option,
+    which defines the symbol DEBUG_ON, and run the program as usual
+    with mpirun.
+    When the output appears on the terminal, listing the pids of the
+    processes and which hosts they are on, choose the lowest
+    pid P on the machien you are connected to.
+    Open a new terminal window and in that window issue the command
+    gdb --pid P
+    (or gdb -p P on some systems)
+    and after gdb starts, go up the stack to main by entering the
+    command
+    up 3
+    (main will be three stacks frames above your current frame,
+    which should be nanosleep.)
+    Then enter the command
+    set var i = 1
+    to break the while loop. You can now run ordinary gdb commands to
+    debug this process. This should be process 0.
+    Repeat these steps for each other process that you created in
+    the mpirun command.
+    */
+    #include <unistd.h>
+    int debug = 0;
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+    printf("PID %d on %s ready for attach\n", getpid(), hostname);
+    fflush(stdout);
+    while (0 == debug)
+    sleep(5);
+    #endif
+
+    char *elements = malloc((file_size-((p-1)*n)) * sizeof(char));
+    if (!elements) {
+        printf("Memory allocation failed.\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    /* elements to send*/
+    if(ROOT == id){
+        file = fopen(argv[2], "r");
+
+        /**
+         * send the indexes from [i*n, ((i+1)*n-1) + (p-1)]
+        */
+        int chars;                      /* number of characters that each row gets*/
+        chars = n+pattern_length-1;
+        fread(elements, sizeof(char), chars, file);
+        MPI_Send(elements, chars, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
+        char *temp;
+        for(i = 1; i < p - 1; i++){
+            chars = n;
+            temp = elements+n;
+            elements = malloc(chars * sizeof(char));
+            fread(elements, sizeof(char), chars, file);
+            strcat(temp, elements);
+            elements = temp;
+            MPI_Send(elements, n+pattern_length-1, MPI_CHAR, i, 1, MPI_COMM_WORLD);
+        }
+        /* gets its own elements*/
+        chars = file_size - i*n;
+        temp = elements+n;
+        elements = malloc(chars * sizeof(char));
+        fread(elements, sizeof(char), chars, file);
+        strcat(temp, elements);
+        elements = temp;
 
         fclose(file);
     } else {
-        MPI_Recv(elements, chars_for_p(id, n), MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
+        MPI_Recv(elements, n+pattern_length-1, MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
     }
-    // printf("%s \n%s \n", pattern, file_name);
-    // /* Print size of file . intmax_t is a type that holds big numbers */
-    // printf ("%8jd \n", (intmax_t)statbuf.st_size);
-    int count = strlen(elements) - (pattern_length+1);
-    char found[count];
-    search(pattern, elements, pattern_length, pattern_value, hash_value);
 
-    int prompt ; /* synchronizing variable */
+    int size = 0;
+    int *match = search(pattern, elements, pattern_length, pattern_value, hash_value, &size);
+    // printf("process %d: %s size:%d\n", id, elements, size);
+    // for(i = 0; i < size; i++){
+    //     printf("%d ", match[i]);
+    // }
+    // printf("\n");
+
+    int prompt; /* synchronizing variable */
     const int PROMPT_MSG = 2;
-    const int RESPONSE_MSG = 3;
+    const int SIZE_MSG = 3;
+    const int RESPONSE_MSG = 4;
+
     if(0 == id){
-        print_found();
+        print(match, size, id, n);
         if(p > 1){
-            int i;
             for(i = 1; i < p; i++){
                 MPI_Send(&prompt, 1, MPI_INT, i, PROMPT_MSG, MPI_COMM_WORLD);
+                MPI_Recv(&size, 1, MPI_INT, i, SIZE_MSG, MPI_COMM_WORLD, &status);
 
-                MPI_Recv(found, count, MPI_CHAR, i, RESPONSE_MSG, MPI_COMM_WORLD, &status);
-                print_found();
+                MPI_Recv(match, size, MPI_INT, i, RESPONSE_MSG, MPI_COMM_WORLD, &status);
+                print(match, size, i, n);
             }
+            printf("\n");
         }
     } else {
         MPI_Recv(&prompt, 1, MPI_INT, 0, PROMPT_MSG, MPI_COMM_WORLD, &status);
-        MPI_Send(found, count, MPI_CHAR, 0, RESPONSE_MSG, MPI_COMM_WORLD);
+        MPI_Send(&size, 1, MPI_INT, 0, SIZE_MSG, MPI_COMM_WORLD);
+        MPI_Send(match, size, MPI_INT, 0, RESPONSE_MSG, MPI_COMM_WORLD);
     }
 
-    MPI_Finalize(); 
+    MPI_Finalize();
     return 0;
 }
 
-void search(char* pattern, char* text, int pattern_length, int pattern_value, int hash_value){
+int* search(char* pattern, char* text, int pattern_length, int pattern_value, int hash_value, int *size){
     int text_value = 0; /* Text hash value */
-
     int i, j;
+    int* array = (int*)calloc(strlen(text) + (pattern_length-1), sizeof(int));
+
     for(i = 0; i < pattern_length; i++){
         text_value = (text_value * base + text[i]) % prime;
     }
@@ -172,11 +222,23 @@ void search(char* pattern, char* text, int pattern_length, int pattern_value, in
                     break;
                 }
             }
-            if (matches) printf("%d \n", i);
+            if (matches){
+                array[*size] = i;
+                (*size)++;
+            }
         }
         text_value = (base * (text_value - text[i] * hash_value) + text[i + pattern_length]) % prime;
         
         /* if t can be negative*/
         if (text_value < 0) text_value += prime;
+    }
+
+    return array;
+}
+
+void print(int *arr, int size, int id, int n){
+    int offset = id*n;
+    for(int i = 0; i < size; i++){
+        printf("%d ", (offset+arr[i]));
     }
 }
