@@ -1,3 +1,19 @@
+/******************************************************************************
+Title : estimate_ln.c
+Author : Eric Lam
+Created on : March 24, 2024
+Description : Estimates the natural log of a number based on the number of 
+              segments
+Purpose : Demonstrates parallel programing using MPI by splitting the fixe file
+          into multiple text fragments and passing it through to each processor
+          calling MPI_Send and MPI_RECV to gather the results back to the ROOT
+          processor to print the results
+Usage : finds the indexes of pattern matches in the text file
+Build with : mpicc -Wall -g -o search search.c
+Modifications: March 27, 2024
+Fixed malloc error with larger text files
+******************************************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +24,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include "mpi.h"
 
 // #define ROOT 0
@@ -30,29 +47,46 @@
  *  however, we need to pass [R*n, ((R+1)*n-1) + (p-1)] to be able to
  *  check the indexes from [((R+1)*n-1)-p, (R+1)*n-1)]
 */
-int* search(char* pattern, char* text, int pattern_length, int pattern_value, int hash_value, int *size);
+int* search(
+    char* pattern, 
+    char* text, 
+    int pattern_length, 
+    int pattern_value, 
+    int hash_value, 
+    int *size
+);
+
+/**
+ * prints the indexes in the array where a match was found
+ * n is the offset so that it prints the original index
+ * found in file
+*/
 void print(int *arr, int size, int id, int n);
 
+/**
+ * checks if the string contains all non control characters
+*/
+bool isValid(char *string, int size);
+
 int main(int argc, char *argv[]) {
-    struct stat statbuf;    /* */
+    struct stat statbuf;    /* statbuf of the text file     */
     int id;                 /* rank of executing process    */
     int p;                  /* number of processes          */
+    int pattern_length;     /* length of pattern            */
+    int pattern_value;      /* hash value of pattern        */
+    int hash_value;         /* general hash value           */
+    int n;                  /* number of chars for each p   */
 
-    int pattern_value;      
-    int hash_value;
-    int file_size;
-    int n;
-
+    int file_size;         
     FILE *file;
-    int pattern_length;
-    MPI_Status status;         /* result of MPI_Recv */
+    MPI_Status status;      /* result of MPI_Recv */
 
     MPI_Init( &argc, &argv );
     MPI_Comm_rank( MPI_COMM_WORLD, &id );
     MPI_Comm_size (MPI_COMM_WORLD, &p);
-
-    const int ROOT = p - 1;
-    int i;                          /* loop index*/
+    
+    const int ROOT = p - 1; /* root processor is the last processor*/
+    int i;                  /* loop index*/
     if(ROOT == id){
         if((argc < 3)){
             printf("Usage: %s <pattern> <file>\n", argv[0]);
@@ -65,16 +99,24 @@ int main(int argc, char *argv[]) {
         } 
         file_size = statbuf.st_size-1;
         pattern_length = strlen(argv[1]);
+        if(!isValid(argv[1], pattern_length)){
+            printf("The pattern contains non-valid characters \n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         if(file_size < pattern_length){
             printf("File size is less than pattern length \n");
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        /* Rounding n to the nearest int*/
+        /* Rounding n down to the nearest int*/
         n = (((double)file_size-(pattern_length-1)) / p); 
     }
-
+    
     MPI_Bcast(&pattern_length, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
-    char *pattern = malloc((pattern_length + 1) * sizeof(char));
+    char *pattern = (char *)malloc((pattern_length + 1) * sizeof(char));
+    if (!pattern) {
+        printf("Memory allocation failed.\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
     if(ROOT == id){
         strcpy(pattern, argv[1]);
@@ -98,8 +140,46 @@ int main(int argc, char *argv[]) {
     MPI_Bcast(&pattern_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&n, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&file_size, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    /**
+     * if the number of indexes to check is smaller than the number of processors
+     * only the root processor performs the search
+    */
+    if(file_size - (pattern_length-1) < p){
+        if(ROOT == id){
+            file = fopen(argv[2], "r");
 
-    #ifdef DEBUG_ON
+            char *elements = (char *)calloc(file_size, sizeof(char));
+            if (!elements) {
+                printf("Memory allocation failed.\n");
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+            fread(elements, sizeof(char), file_size, file);
+
+            int size = 0;
+            int *match = search(
+                            pattern, 
+                            elements, 
+                            pattern_length, 
+                            pattern_value, 
+                            hash_value, 
+                            &size);
+            print(match, size, 0, n);
+        }   
+
+        free(pattern);
+        MPI_Finalize();
+        return 0;
+    }
+
+    char *elements = (char *)calloc((file_size-((p-1)*n)), sizeof(char));
+    if (!elements) {
+        printf("Memory allocation failed.\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    int chars;                      /* number of characters that each row gets*/
+    /* elements to send*/
+     #ifdef DEBUG_ON
     /* To debug, compile this program with the -DDEBUG_ON option,
     which defines the symbol DEBUG_ON, and run the program as usual
     with mpirun.
@@ -130,66 +210,55 @@ int main(int argc, char *argv[]) {
     while (0 == debug)
     sleep(5);
     #endif
-
-    /**
-     * if the number of indexes to check is smaller than the number of processors
-     * only the root processor performs the search
-    */
-    if(file_size - (pattern_length-1) < p){
-        if(ROOT == id){
-            file = fopen(argv[2], "r");
-
-            char *elements = (char *)calloc(file_size, sizeof(char));
-            fread(elements, sizeof(char), file_size, file);
-
-            int size = 0;
-            int *match = search(pattern, elements, pattern_length, pattern_value, hash_value, &size);
-            print(match, size, 0, n);
-        }   
-        MPI_Finalize();
-        return 0;
-    }
-
-    char *elements = (char *)calloc((file_size-((p-1)*n)), sizeof(char));
-    if (!elements) {
-        printf("Memory allocation failed.\n");
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-
-    /* elements to send*/
     if(ROOT == id){
         file = fopen(argv[2], "r");
 
         /**
          * send the indexes from [i*n, ((i+1)*n-1) + (p-1)]
         */
-        int chars;                      /* number of characters that each row gets*/
         chars = n+pattern_length-1;
         fread(elements, sizeof(char), chars, file);
         MPI_Send(elements, chars, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
-        char *temp;
+        char *temp = elements = (char *)calloc(chars, sizeof(char));
         for(i = 1; i < p - 1; i++){
-            temp = elements+n;
-            elements = calloc(n, sizeof(char));
+            strcpy(temp, elements+n);
+            elements = (char *)calloc(chars, sizeof(char));
+            if (!elements) {
+                printf("Memory allocation failed.\n");
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
             fread(elements, sizeof(char), chars, file);
             strcat(temp, elements);
-            elements = temp;
-            MPI_Send(elements, n+pattern_length-1, MPI_CHAR, i, 1, MPI_COMM_WORLD);
+            free(elements);
+            MPI_Send(temp, chars, MPI_CHAR, i, 1, MPI_COMM_WORLD);
         }
         /* gets its own elements*/
         chars = file_size - i*n;
-        temp = elements+n;
-        elements = calloc(chars, sizeof(char));
+        strcpy(temp, elements+n);
+        elements = (char *)calloc(chars, sizeof(char));
+        if (!elements) {
+            printf("Memory allocation failed.\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         fread(elements, sizeof(char), chars, file);
         strcat(temp, elements);
-        elements = temp;
+        strcpy(elements, temp);
+        free(temp);
         fclose(file);
     } else {
-        MPI_Recv(elements, n+pattern_length-1, MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
+        chars = n+pattern_length-1;
+        MPI_Recv(elements, chars, MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
     }
 
     int size = 0;
-    int *match = search(pattern, elements, pattern_length, pattern_value, hash_value, &size);
+    int *match = search(
+                    pattern, 
+                    elements, 
+                    pattern_length, 
+                    pattern_value, 
+                    hash_value, 
+                    &size
+                );
     int prompt; /* synchronizing variable */
     const int PROMPT_MSG = 2;
     const int SIZE_MSG = 3;
@@ -197,14 +266,12 @@ int main(int argc, char *argv[]) {
 
     if(0 == id){
         print(match, size, id, n);
-        if(p > 1){
-            for(i = 1; i < p; i++){
-                MPI_Send(&prompt, 1, MPI_INT, i, PROMPT_MSG, MPI_COMM_WORLD);
-                MPI_Recv(&size, 1, MPI_INT, i, SIZE_MSG, MPI_COMM_WORLD, &status);
+        for(i = 1; i < p; i++){
+            MPI_Send(&prompt, 1, MPI_INT, i, PROMPT_MSG, MPI_COMM_WORLD);
+            MPI_Recv(&size, 1, MPI_INT, i, SIZE_MSG, MPI_COMM_WORLD, &status);
 
-                MPI_Recv(match, size, MPI_INT, i, RESPONSE_MSG, MPI_COMM_WORLD, &status);
-                print(match, size, i, n);
-            }
+            MPI_Recv(match, size, MPI_INT, i, RESPONSE_MSG, MPI_COMM_WORLD, &status);
+            print(match, size, i, n);
         }
     } else {
         MPI_Recv(&prompt, 1, MPI_INT, 0, PROMPT_MSG, MPI_COMM_WORLD, &status);
@@ -212,19 +279,43 @@ int main(int argc, char *argv[]) {
         MPI_Send(match, size, MPI_INT, 0, RESPONSE_MSG, MPI_COMM_WORLD);
     }
 
+    free(match);
+    free(pattern);
     MPI_Finalize();
     return 0;
 }
 
-int* search(char* pattern, char* text, int pattern_length, int pattern_value, int hash_value, int *size){
-    int text_value = 0; /* Text hash value */
+int* search(
+    char* pattern, 
+    char* text, 
+    int pattern_length, 
+    int pattern_value, 
+    int hash_value, 
+    int *size
+){
+    int text_value = 0;     /* Text hash value */
     int i, j;
+    /* alloc enough memory for if every index is a match*/
     int* array = (int*)calloc(strlen(text) + (pattern_length-1), sizeof(int));
+    if (!array) {
+        printf("Memory allocation failed.\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
+    /* calculates the text index */
     for(i = 0; i < pattern_length; i++){
         text_value = (text_value * base + text[i]) % prime;
     }
 
+    /**
+     * finds potention string matches using a rolling hash
+     * if the hash of the text is the same as the pattern 
+     * then you perform a check to see if the pattern 
+     * matches the string segment from 
+     * point i to i + pattern_length
+     * if it is then it adds it to the array and updates
+     * size to contain the true number of elements
+    */
     for(i = 0; i <= strlen(text) - pattern_length; i++){
         if (pattern_value == text_value) {
             bool matches = true;
@@ -239,7 +330,8 @@ int* search(char* pattern, char* text, int pattern_length, int pattern_value, in
                 (*size)++;
             }
         }
-        text_value = (base * (text_value - text[i] * hash_value) + text[i + pattern_length]) % prime;
+        text_value = (base * (text_value - text[i] * hash_value) 
+                        + text[i + pattern_length]) % prime;
         
         /* if t can be negative*/
         if (text_value < 0) text_value += prime;
@@ -253,4 +345,13 @@ void print(int *arr, int size, int id, int n){
     for(int i = 0; i < size; i++){
         printf("%d \n", (offset+arr[i]));
     }
+}
+
+bool isValid(char *string, int size){
+    for(int i = 0; i < size; i++){
+        if (isprint(string[i]) == 0){
+            return false;
+        }
+    }
+    return true;
 }
