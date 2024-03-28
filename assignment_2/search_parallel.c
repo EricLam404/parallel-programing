@@ -12,8 +12,7 @@
 
 // #define ROOT 0
 #define base 256
-#define prime 101 
-#define BUFFERMAX 2000
+#define prime 101
 
 /** search()
  *  This returns the index of every match that the pattern is found
@@ -64,15 +63,18 @@ int main(int argc, char *argv[]) {
             printf("Could not stat file %s \n" , argv[2]);
             MPI_Abort(MPI_COMM_WORLD, 1);
         } 
-
-        pattern_length = strlen(argv[1]);
         file_size = statbuf.st_size-1;
+        pattern_length = strlen(argv[1]);
+        if(file_size < pattern_length){
+            printf("File size is less than pattern length \n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         /* Rounding n to the nearest int*/
-        n = (((double)file_size-(pattern_length-1)) / p) + 0.5; 
+        n = (((double)file_size-(pattern_length-1)) / p); 
     }
 
     MPI_Bcast(&pattern_length, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
-    char pattern[pattern_length];          /* */
+    char *pattern = malloc((pattern_length + 1) * sizeof(char));
 
     if(ROOT == id){
         strcpy(pattern, argv[1]);
@@ -90,7 +92,7 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    MPI_Bcast(pattern, strlen(pattern) + 1, MPI_CHAR, ROOT, MPI_COMM_WORLD); 
+    MPI_Bcast(pattern, pattern_length + 1, MPI_CHAR, ROOT, MPI_COMM_WORLD); 
 
     MPI_Bcast(&hash_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD); 
     MPI_Bcast(&pattern_value, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
@@ -129,7 +131,26 @@ int main(int argc, char *argv[]) {
     sleep(5);
     #endif
 
-    char *elements = malloc((file_size-((p-1)*n)) * sizeof(char));
+    /**
+     * if the number of indexes to check is smaller than the number of processors
+     * only the root processor performs the search
+    */
+    if(file_size - (pattern_length-1) < p){
+        if(ROOT == id){
+            file = fopen(argv[2], "r");
+
+            char *elements = (char *)calloc(file_size, sizeof(char));
+            fread(elements, sizeof(char), file_size, file);
+
+            int size = 0;
+            int *match = search(pattern, elements, pattern_length, pattern_value, hash_value, &size);
+            print(match, size, 0, n);
+        }   
+        MPI_Finalize();
+        return 0;
+    }
+
+    char *elements = (char *)calloc((file_size-((p-1)*n)), sizeof(char));
     if (!elements) {
         printf("Memory allocation failed.\n");
         MPI_Abort(MPI_COMM_WORLD, 1);
@@ -148,9 +169,8 @@ int main(int argc, char *argv[]) {
         MPI_Send(elements, chars, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
         char *temp;
         for(i = 1; i < p - 1; i++){
-            chars = n;
             temp = elements+n;
-            elements = malloc(chars * sizeof(char));
+            elements = calloc(n, sizeof(char));
             fread(elements, sizeof(char), chars, file);
             strcat(temp, elements);
             elements = temp;
@@ -159,11 +179,10 @@ int main(int argc, char *argv[]) {
         /* gets its own elements*/
         chars = file_size - i*n;
         temp = elements+n;
-        elements = malloc(chars * sizeof(char));
+        elements = calloc(chars, sizeof(char));
         fread(elements, sizeof(char), chars, file);
         strcat(temp, elements);
         elements = temp;
-
         fclose(file);
     } else {
         MPI_Recv(elements, n+pattern_length-1, MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
@@ -171,12 +190,6 @@ int main(int argc, char *argv[]) {
 
     int size = 0;
     int *match = search(pattern, elements, pattern_length, pattern_value, hash_value, &size);
-    // printf("process %d: %s size:%d\n", id, elements, size);
-    // for(i = 0; i < size; i++){
-    //     printf("%d ", match[i]);
-    // }
-    // printf("\n");
-
     int prompt; /* synchronizing variable */
     const int PROMPT_MSG = 2;
     const int SIZE_MSG = 3;
@@ -192,7 +205,6 @@ int main(int argc, char *argv[]) {
                 MPI_Recv(match, size, MPI_INT, i, RESPONSE_MSG, MPI_COMM_WORLD, &status);
                 print(match, size, i, n);
             }
-            printf("\n");
         }
     } else {
         MPI_Recv(&prompt, 1, MPI_INT, 0, PROMPT_MSG, MPI_COMM_WORLD, &status);
@@ -239,6 +251,6 @@ int* search(char* pattern, char* text, int pattern_length, int pattern_value, in
 void print(int *arr, int size, int id, int n){
     int offset = id*n;
     for(int i = 0; i < size; i++){
-        printf("%d ", (offset+arr[i]));
+        printf("%d \n", (offset+arr[i]));
     }
 }
