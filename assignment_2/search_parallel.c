@@ -210,31 +210,36 @@ int main(int argc, char *argv[]) {
     while (0 == debug)
     sleep(5);
     #endif
+    chars = n+pattern_length-1;
     if(ROOT == id){
         file = fopen(argv[2], "r");
 
         /**
-         * send the indexes from [i*n, ((i+1)*n-1) + (p-1)]
+         * send the indexes from [0, n+pattern_length-1]
         */
-        chars = n+pattern_length-1;
         fread(elements, sizeof(char), chars, file);
         MPI_Send(elements, chars, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
-        char *temp = elements = (char *)calloc(chars, sizeof(char));
+
+
+        /**
+         * each processor gets [n*i, (n+pattern_length-1) * i + 1]
+         * each prosssor only moves foward n characters, so that
+         * there are enough characters for each processor to check
+         * n times
+        */
+        
+        char *temp = (char *)calloc(chars, sizeof(char));
         for(i = 1; i < p - 1; i++){
             strcpy(temp, elements+n);
-            elements = (char *)calloc(chars, sizeof(char));
-            if (!elements) {
-                printf("Memory allocation failed.\n");
-                MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            fread(elements, sizeof(char), chars, file);
+            fread(elements, sizeof(char), pattern_length-1, file);
             strcat(temp, elements);
-            free(elements);
             MPI_Send(temp, chars, MPI_CHAR, i, 1, MPI_COMM_WORLD);
         }
+
         /* gets its own elements*/
         chars = file_size - i*n;
         strcpy(temp, elements+n);
+        free(elements);
         elements = (char *)calloc(chars, sizeof(char));
         if (!elements) {
             printf("Memory allocation failed.\n");
@@ -246,7 +251,6 @@ int main(int argc, char *argv[]) {
         free(temp);
         fclose(file);
     } else {
-        chars = n+pattern_length-1;
         MPI_Recv(elements, chars, MPI_CHAR, ROOT, 1, MPI_COMM_WORLD, &status);
     }
 
@@ -265,6 +269,7 @@ int main(int argc, char *argv[]) {
     const int RESPONSE_MSG = 4;
 
     if(0 == id){
+        /* prints the outputs in order */
         print(match, size, id, n);
         for(i = 1; i < p; i++){
             MPI_Send(&prompt, 1, MPI_INT, i, PROMPT_MSG, MPI_COMM_WORLD);
@@ -274,6 +279,7 @@ int main(int argc, char *argv[]) {
             print(match, size, i, n);
         }
     } else {
+        /* waits for the processors turn to send data to the 0 processor */
         MPI_Recv(&prompt, 1, MPI_INT, 0, PROMPT_MSG, MPI_COMM_WORLD, &status);
         MPI_Send(&size, 1, MPI_INT, 0, SIZE_MSG, MPI_COMM_WORLD);
         MPI_Send(match, size, MPI_INT, 0, RESPONSE_MSG, MPI_COMM_WORLD);
