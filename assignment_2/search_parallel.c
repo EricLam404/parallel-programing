@@ -1,5 +1,5 @@
 /******************************************************************************
-Title : estimate_ln.c
+Title : search.c
 Author : Eric Lam
 Created on : March 24, 2024
 Description : Estimates the natural log of a number based on the number of 
