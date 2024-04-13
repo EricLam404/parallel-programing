@@ -206,10 +206,24 @@ int main ( int argc, char * argv[] )
     double  boundary_temperature[4];
     double  **plate;
     double  *plate_storage;
+    int     x, y;
 
     if ( argc < 4 ) {
         fprintf(stderr, "Usage: %s file xcord ycord\n", argv[0]);
         exit(1);
+    }
+
+    char *endptr;
+    x = (int)strtol(argv[2], &endptr, 10);
+    if(*endptr != '\0'){
+        fprintf(stderr, "%s is not a integer\n", argv[2]);
+        exit(1);
+    }
+
+    y = (int)strtol(argv[3], &endptr, 10);
+    if(*endptr != '\0'){
+        fprintf(stderr, "%s is not a integer\n", argv[3]);
+        exit(1); 
     }
 
     inputfile = fopen( argv[1],  "r");
@@ -220,6 +234,15 @@ int main ( int argc, char * argv[] )
     
     fscanf(inputfile, "%d ", &width);
     fscanf(inputfile, "%d ", &height);
+
+    if(!(0 <= x && x < width)){
+        fprintf(stderr, "%d is not a in between [0, %d)\n", x, width);
+        exit(1); 
+    }
+    if(!(0 <= y && y < height)){
+        fprintf(stderr, "%d is not a in between [0, %d)\n", y, height);
+        exit(1); 
+    }
 
     for ( i = 0; i < 4; i++ )
         fscanf(inputfile, " %lf ", &(boundary_temperature[i]) ); 
