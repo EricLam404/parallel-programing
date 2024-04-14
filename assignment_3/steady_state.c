@@ -300,6 +300,7 @@ int main ( int argc, char * argv[] )
         printf("\033[2J\033[H");
         printf("diff; %f < %f in %d rounds \n", maxdiff, tolerance, count);
     }
+    printf("%.2f\n", plate[x][y]);
 
     free( plate);
     free( plate_storage );
