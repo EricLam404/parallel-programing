@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
             printf("Could not stat file %s \n" , argv[2]);
             MPI_Abort(MPI_COMM_WORLD, 1);
         } 
-        file_size = statbuf.st_size-1;
+        file_size = statbuf.st_size;
         pattern_length = strlen(argv[1]);
         if(!isValid(argv[1], pattern_length)){
             printf("The pattern contains non-valid characters \n");
